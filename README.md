@@ -277,7 +277,7 @@ Each of these is a new tool following the same structure you see in
 ## Resources
 
 - [AVEVA Connect portal](https://connect.aveva.com)
-- [SDS REST API reference](https://docs.had.aveva.com) — Sequential Data Store section
+- [Connect Data Services developer documentation](https://docs.aveva.com/bundle/connect-data-services-developer/page/index.html) — Sequential Data Store section
 - [MCP specification](https://modelcontextprotocol.io)
 - [FastMCP documentation](https://github.com/jlowin/fastmcp)
 - [Claude Desktop MCP setup](https://docs.anthropic.com/claude/docs/mcp)
