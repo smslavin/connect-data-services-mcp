@@ -187,6 +187,40 @@ All four tools now make real calls to your tenant's SDS namespace.
 
 ---
 
+## Demo scenario
+
+With the server running and connected to Claude Desktop, try this prompt:
+
+> *"What process data is available in the AWA namespace, and is anything worth my attention right now?"*
+
+Claude will call `list_namespaces`, `list_streams`, `get_stream_metadata` for
+each stream of interest, and `get_values` across a 48-hour window — all from
+that single question. The response will look something like this:
+
+> I found six streams in the AWA-Production namespace covering influent flow,
+> aeration, filtration, effluent quality, chemical dosing, and pump status.
+> A few things stand out:
+>
+> **Filter 1 head loss (PDT-401.PV)** has climbed from 1.4 ft to 6.7 ft over
+> the past 48 hours and is approaching the 8.0 ft backwash threshold. At the
+> current rate it will reach that limit within the next several hours.
+>
+> **Effluent turbidity (AIT-501.PV)** spiked to 1.8 NTU approximately six
+> hours ago — above the 1.0 NTU permit limit — before recovering to normal.
+> Transfer pump 201 (P-201.RunStatus) tripped at the same time and was offline
+> for about 30 minutes. The two events appear related.
+>
+> **Chlorine dosing (FIC-601.PV)** is tracking the expected diurnal flow
+> pattern — nothing unusual there.
+>
+> Would you like a closer look at the filter trend or the turbidity event?
+
+This is the pattern you are building toward with your own customers: a single
+question that spans multiple streams, surfaces correlations a human might miss,
+and offers a clear next step — without any custom application code.
+
+---
+
 ## The four tools
 
 ### `list_namespaces`
