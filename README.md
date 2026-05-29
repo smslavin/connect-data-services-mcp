@@ -166,11 +166,15 @@ Copy `.env.example` to `.env` and fill in your values:
 CONNECT_TENANT_ID=your-tenant-id
 CONNECT_CLIENT_ID=your-client-id
 CONNECT_CLIENT_SECRET=your-client-secret
-CONNECT_REGION=uswe
+CONNECT_REGION=your-region-slug
 ```
 
-The region slug matches the subdomain of your Connect portal URL. Common
-values: `uswe` (US West), `euno` (EU North), `apso` (Asia Pacific South).
+All four variables are required. The server falls back to demo mode if any
+are missing rather than connecting to the wrong endpoint.
+
+Your region slug is the subdomain prefix of your Connect portal URL:
+`https://`**`euno`**`.datahub.connect.aveva.com` → `euno`. Common values:
+`uswe` (US West), `euno` (EU North), `apso` (Asia Pacific South).
 
 **3. Run the server**
 
@@ -277,7 +281,18 @@ stdio is the right default.
 
 Removing friction is important for adoption. An SI who clones this repo and
 runs `python server.py` gets a working server immediately. When they are ready
-to connect real data, they add a `.env` file and nothing else changes.
+to connect real data, they add a `.env` file with all four required variables
+(`CONNECT_TENANT_ID`, `CONNECT_CLIENT_ID`, `CONNECT_CLIENT_SECRET`,
+`CONNECT_REGION`) and nothing else changes.
+
+**Why use OpenID Connect discovery for the token endpoint?**
+
+Rather than hardcoding the OAuth token URL, the server fetches it at startup
+from the well-known OpenID Connect configuration document at
+`{BASE_URL}/identity/.well-known/openid-configuration`. This is the pattern
+AVEVA uses in their own authentication samples. It stays correct if AVEVA
+moves the endpoint in a future release, and it avoids the need to know the
+exact URL path in advance — the discovery document is the authoritative source.
 
 **Why are descriptions long?**
 
