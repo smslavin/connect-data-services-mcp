@@ -48,7 +48,7 @@ The data is designed to give the AI something meaningful to say. The filter
 head loss drift, the turbidity exceedance, the pump trip, and the dosing
 correlation are all present and discoverable through normal tool use.
 
-Demo data is deterministic — generated from a fixed seed — so the AI sees the
+Demo data is deterministic, generated from a fixed seed, so the AI sees the
 same values every time, making training sessions reproducible.
 
 ---
@@ -277,7 +277,7 @@ Each of these is a new tool following the same structure you see in
 ## Resources
 
 - [AVEVA Connect portal](https://connect.aveva.com)
-- [Connect Data Services developer documentation](https://docs.aveva.com/bundle/connect-data-services-developer/page/index.html) — Sequential Data Store section
+- [Connect Data Services developer documentation](https://docs.aveva.com/bundle/connect-data-services-developer/page/index.html)
 - [MCP specification](https://modelcontextprotocol.io)
 - [FastMCP documentation](https://github.com/jlowin/fastmcp)
 - [Claude Desktop MCP setup](https://docs.anthropic.com/claude/docs/mcp)
