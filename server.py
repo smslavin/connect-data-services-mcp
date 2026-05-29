@@ -53,9 +53,9 @@ load_dotenv()
 _TENANT_ID     = os.getenv("CONNECT_TENANT_ID", "")
 _CLIENT_ID     = os.getenv("CONNECT_CLIENT_ID", "")
 _CLIENT_SECRET = os.getenv("CONNECT_CLIENT_SECRET", "")
-_REGION        = os.getenv("CONNECT_REGION", "uswe")
+_REGION        = os.getenv("CONNECT_REGION", "")
 
-DEMO_MODE = not all([_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET])
+DEMO_MODE = not all([_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET, _REGION])
 
 # ---------------------------------------------------------------------------
 # Live mode: OAuth 2.0 client credentials + SDS REST calls
