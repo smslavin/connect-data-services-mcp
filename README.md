@@ -103,10 +103,12 @@ The server is now running over stdio, ready for an MCP client to connect.
 
 ## Connecting to Claude Desktop
 
-Add this block to your Claude Desktop configuration file:
+The configuration file location depends on your OS:
 
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+### Windows or macOS (native Python)
 
 ```json
 {
@@ -119,11 +121,32 @@ Add this block to your Claude Desktop configuration file:
 }
 ```
 
-Replace the path with the actual location of `server.py`. Restart Claude
-Desktop after saving.
+### Windows with WSL
 
-The four tools (`list_namespaces`, `list_streams`, `get_stream_metadata`,
-`get_values`) will appear in Claude's tool list automatically.
+Claude Desktop runs on Windows but can launch the server inside WSL. Use the
+full path to the Python executable inside the virtual environment — this avoids
+any dependency on the WSL shell's PATH.
+
+```json
+{
+  "mcpServers": {
+    "connect-data-services": {
+      "command": "wsl",
+      "args": [
+        "/home/username/connect-data-services-mcp/.venv/bin/python",
+        "/home/username/connect-data-services-mcp/server.py"
+      ]
+    }
+  }
+}
+```
+
+Replace `username` with your WSL username. If you cloned the repo to a Windows
+path, the WSL equivalent is `/mnt/c/Users/<WindowsUser>/path/to/connect-data-services-mcp`.
+
+Restart Claude Desktop after saving. The four tools (`list_namespaces`,
+`list_streams`, `get_stream_metadata`, `get_values`) will appear in Claude's
+tool list automatically.
 
 ---
 
