@@ -55,13 +55,20 @@ same values every time, making training sessions reproducible.
 
 ## Quick start (demo mode — no account required)
 
-**1. Clone and set up a virtual environment**
+**1. Clone the repository**
 
 ```bash
-git clone https://github.com/your-org/connect-data-services-mcp.git
+git clone https://github.com/smslavin/connect-data-services-mcp.git
 cd connect-data-services-mcp
+```
+
+**2. Create a virtual environment**
+
+```bash
 python -m venv .venv
 ```
+
+**3. Activate the virtual environment**
 
 Windows:
 ```powershell
@@ -73,13 +80,13 @@ macOS/Linux:
 source .venv/bin/activate
 ```
 
-**2. Install dependencies**
+**4. Install dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**3. Run the server**
+**5. Run the server**
 
 ```bash
 python server.py
