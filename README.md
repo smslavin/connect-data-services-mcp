@@ -264,7 +264,7 @@ resolution over a short event window.
 
 **Why four tools and not one?**
 
-Each tool does one thing. The AI builds up context incrementally — first learn
+Each tool does one thing. The AI builds up context incrementally. First learn
 what namespaces exist, then what streams they contain, then what a specific
 stream means, then fetch its values. This mirrors how a human analyst would
 approach an unfamiliar historian. It also gives the AI natural checkpoints to
@@ -273,7 +273,7 @@ confirm it is querying the right thing before consuming data.
 **Why stdio transport?**
 
 The MCP specification supports both stdio (subprocess) and HTTP transports.
-Stdio is simpler to distribute: one command, no port to configure, no
+Stdio is simpler to distribute. One command, no port to configure, no
 firewall rules. For a server that runs locally alongside Claude Desktop,
 stdio is the right default.
 
@@ -292,13 +292,13 @@ from the well-known OpenID Connect configuration document at
 `{BASE_URL}/identity/.well-known/openid-configuration`. This is the pattern
 AVEVA uses in their own authentication samples. It stays correct if AVEVA
 moves the endpoint in a future release, and it avoids the need to know the
-exact URL path in advance — the discovery document is the authoritative source.
+exact URL path in advance. The discovery document is the authoritative source.
 
 **Why are descriptions long?**
 
 Tool descriptions are the AI's primary source of context. A description that
 says "returns flow values" tells the AI what the tool returns but not what
-flow means, what units it is in, or what a normal value looks like. Richer
+flow means, what units it is in or what a normal value looks like. Richer
 descriptions reduce hallucination and lead to better questions from the AI.
 This is more important for smaller models that have less world knowledge to
 draw on.
@@ -315,8 +315,8 @@ keeping results stable across restarts.
 
 Data with correlations and anomalies gives the AI something to reason about.
 A filter trending toward its backwash threshold, a past turbidity exceedance
-that coincided with a pump trip, dosing that tracks influent flow — these
-are the kinds of patterns an operator cares about, and they are the patterns
+that coincided with a pump trip, dosing that tracks influent flow. These
+are the kinds of patterns an operator cares about and they are the patterns
 that demonstrate the value of putting an AI over your historian.
 
 ---
