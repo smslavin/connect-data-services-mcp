@@ -64,16 +64,27 @@ DEMO_MODE = not all([_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET])
 # Tokens expire in 3600 s; we cache and refresh automatically.
 # ---------------------------------------------------------------------------
 
-# Multi-tenant identity servers route by tenant ID in the URL path.
-# Override with CONNECT_IDENTITY_URL if your portal shows a different endpoint.
-_IDENTITY_URL = os.getenv(
-    "CONNECT_IDENTITY_URL",
-    f"https://identity.connect.aveva.com/{_TENANT_ID}/connect/token",
-)
 _BASE_URL = f"https://{_REGION}.datahub.connect.aveva.com"
+
+# Token endpoint is resolved at runtime via OpenID Connect discovery rather
+# than hardcoded. This matches AVEVA's own authentication samples and stays
+# correct if the endpoint path changes in a future release.
+_DISCOVERY_URL = f"{_BASE_URL}/identity/.well-known/openid-configuration"
 
 _token: str | None = None
 _token_expiry: datetime | None = None
+_token_url: str | None = None
+
+
+async def _get_token_url() -> str:
+    global _token_url
+    if _token_url:
+        return _token_url
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(_DISCOVERY_URL, timeout=10)
+        resp.raise_for_status()
+    _token_url = resp.json()["token_endpoint"]
+    return _token_url
 
 
 async def _get_token() -> str:
@@ -81,14 +92,14 @@ async def _get_token() -> str:
     now = datetime.now(timezone.utc)
     if _token and _token_expiry and now < _token_expiry:
         return _token
+    token_url = await _get_token_url()
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            _IDENTITY_URL,
+            token_url,
             data={
                 "grant_type": "client_credentials",
                 "client_id": _CLIENT_ID,
                 "client_secret": _CLIENT_SECRET,
-                "scope": "ocsapi",
             },
         )
         resp.raise_for_status()
