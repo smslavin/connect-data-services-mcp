@@ -64,8 +64,13 @@ DEMO_MODE = not all([_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET])
 # Tokens expire in 3600 s; we cache and refresh automatically.
 # ---------------------------------------------------------------------------
 
-_IDENTITY_URL = "https://identity.connect.aveva.com/connect/token"
-_BASE_URL     = f"https://{_REGION}.datahub.connect.aveva.com"
+# Multi-tenant identity servers route by tenant ID in the URL path.
+# Override with CONNECT_IDENTITY_URL if your portal shows a different endpoint.
+_IDENTITY_URL = os.getenv(
+    "CONNECT_IDENTITY_URL",
+    f"https://identity.connect.aveva.com/{_TENANT_ID}/connect/token",
+)
+_BASE_URL = f"https://{_REGION}.datahub.connect.aveva.com"
 
 _token: str | None = None
 _token_expiry: datetime | None = None
