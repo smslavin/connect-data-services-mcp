@@ -31,8 +31,9 @@ LLM sees the same values every time, making demos and training reproducible.
 
 ---
 
-Transport: stdio (default for FastMCP)
+Transport: stdio (default for MCPServer)
 Python:    3.11+ recommended, 64-bit, no native extensions required
+MCP:       spec 2026-07-28, mcp SDK 2.x
 """
 
 import os
@@ -40,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 import mock_data
 
@@ -131,7 +132,7 @@ async def _get(path: str) -> dict | list:
 # MCP application
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("connect-data-services")
+mcp = MCPServer(name="connect-data-services")
 
 # ---------------------------------------------------------------------------
 # Tools

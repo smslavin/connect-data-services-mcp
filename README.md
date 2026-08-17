@@ -325,7 +325,7 @@ that demonstrate the value of putting an AI over your historian.
 
 ```
 connect-data-services-mcp/
-├── server.py       Main file: FastMCP app, tool definitions, OAuth client
+├── server.py       Main file: MCPServer app, tool definitions, OAuth client
 ├── mock_data.py    Demo data: stream definitions and time-series generation
 ├── requirements.txt
 ├── .env.example    Credential template — copy to .env, never commit .env
@@ -357,6 +357,6 @@ Each of these is a new tool following the same structure you see in
 
 - [AVEVA Connect portal](https://connect.aveva.com)
 - [Connect Data Services developer documentation](https://docs.aveva.com/bundle/connect-data-services-developer/page/index.html)
-- [MCP specification](https://modelcontextprotocol.io)
-- [FastMCP documentation](https://github.com/jlowin/fastmcp)
+- [MCP specification (2026-07-28)](https://modelcontextprotocol.io/specification/2026-07-28)
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 - [Claude Desktop MCP setup](https://docs.anthropic.com/claude/docs/mcp)
