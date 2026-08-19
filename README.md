@@ -319,6 +319,24 @@ that coincided with a pump trip, dosing that tracks influent flow. These
 are the kinds of patterns an operator cares about and they are the patterns
 that demonstrate the value of putting an AI over your historian.
 
+**Why do the tools declare annotations?**
+
+Every tool here only reads from SDS — none of them ever changes a setpoint
+or writes back to the historian. `mcp SDK` v2's `ToolAnnotations`
+(`readOnlyHint`, `idempotentHint`, `openWorldHint`) let the server say so
+explicitly instead of leaving the client to guess from the tool name. This
+matters more once a server grows write tools alongside read tools — a
+client or a human approving tool calls should be able to tell them apart
+without reading the implementation.
+
+**Why structured output instead of plain JSON text?**
+
+Each tool's return type is a `TypedDict` (`sds_types.py`) matching the SDS
+response shape exactly, and `structured_output=True` turns that into a real
+MCP `output_schema`. Clients get typed `structured_content` back instead of
+a JSON blob they have to parse out of a text block — the same shift REST
+APIs made from HTML scraping to typed JSON responses.
+
 ---
 
 ## Project structure
@@ -326,6 +344,7 @@ that demonstrate the value of putting an AI over your historian.
 ```
 connect-data-services-mcp/
 ├── server.py       Main file: MCPServer app, tool definitions, OAuth client
+├── sds_types.py    TypedDict response shapes used for structured tool output
 ├── mock_data.py    Demo data: stream definitions and time-series generation
 ├── requirements.txt
 ├── .env.example    Credential template — copy to .env, never commit .env

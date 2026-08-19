@@ -42,10 +42,18 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from dotenv import load_dotenv
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
 
 import mock_data
+from sds_types import Namespace, Stream, StreamValue
 
 load_dotenv()
+
+_VERSION = "0.2.0"
+
+_READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 
 # ---------------------------------------------------------------------------
 # Mode detection
@@ -125,21 +133,37 @@ async def _get(path: str) -> dict | list:
             detail = resp.json()
         except Exception:
             detail = resp.text or resp.reason_phrase
-        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+        raise ToolError(f"HTTP {resp.status_code}: {detail}")
     return resp.json()
 
 # ---------------------------------------------------------------------------
 # MCP application
 # ---------------------------------------------------------------------------
 
-mcp = MCPServer(name="connect-data-services")
+mcp = MCPServer(
+    name="connect-data-services",
+    title="AVEVA Connect Data Services",
+    description=(
+        "Read-only access to AVEVA Connect Data Services (SDS) namespaces, "
+        "streams, and time-series values."
+    ),
+    instructions=(
+        "Query the AVEVA Connect Sequential Data Store (SDS): list namespaces, "
+        "then the streams within a namespace, then a stream's metadata for "
+        "engineering context (units, limits, interpolation mode), then its "
+        "time-series values. Runs in demo mode against a fictional water "
+        "treatment plant (Aveva Water Authority) unless AVEVA Connect "
+        "credentials are configured, in which case it queries a real tenant."
+    ),
+    version=_VERSION,
+)
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-async def list_namespaces() -> list[dict]:
+@mcp.tool(annotations=_READ_ONLY, structured_output=True)
+async def list_namespaces() -> list[Namespace]:
     """
     List all namespaces in the AVEVA Connect tenant.
 
@@ -158,8 +182,8 @@ async def list_namespaces() -> list[dict]:
     return await _get(f"/api/v1/Tenants/{_TENANT_ID}/Namespaces")
 
 
-@mcp.tool()
-async def list_streams(namespace_id: str, query: str = "") -> list[dict]:
+@mcp.tool(annotations=_READ_ONLY, structured_output=True)
+async def list_streams(namespace_id: str, query: str = "") -> list[Stream]:
     """
     List streams in a namespace, with an optional search filter.
 
@@ -186,8 +210,8 @@ async def list_streams(namespace_id: str, query: str = "") -> list[dict]:
     )
 
 
-@mcp.tool()
-async def get_stream_metadata(namespace_id: str, stream_id: str) -> dict:
+@mcp.tool(annotations=_READ_ONLY, structured_output=True)
+async def get_stream_metadata(namespace_id: str, stream_id: str) -> Stream:
     """
     Get the full metadata record for a stream.
 
@@ -211,21 +235,22 @@ async def get_stream_metadata(namespace_id: str, stream_id: str) -> dict:
     if DEMO_MODE:
         result = mock_data.get_stream(stream_id)
         if result is None:
-            raise ValueError(f"Stream '{stream_id}' not found in namespace '{namespace_id}'")
+            raise ToolError(f"Stream '{stream_id}' not found in namespace '{namespace_id}'")
         return result
     return await _get(
         f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}/Streams/{stream_id}"
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY, structured_output=True)
 async def get_values(
     namespace_id: str,
     stream_id: str,
     start: str,
     end: str,
     count: int = 100,
-) -> list[dict]:
+    ctx: Context | None = None,
+) -> list[StreamValue]:
     """
     Query process values from a stream over a time range.
 
@@ -246,13 +271,21 @@ async def get_values(
     Boolean streams:  {"Timestamp": "2026-05-29T00:00:00Z", "Value": true}
     """
     count = min(count, 1000)
+    if ctx:
+        await ctx.report_progress(0, 1, message=f"Querying {stream_id}")
+
     if DEMO_MODE:
-        return mock_data.get_values(stream_id, start, end, count)
-    params = f"?startIndex={start}&endIndex={end}&count={count}"
-    return await _get(
-        f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}"
-        f"/Streams/{stream_id}/Data{params}"
-    )
+        values = mock_data.get_values(stream_id, start, end, count)
+    else:
+        params = f"?startIndex={start}&endIndex={end}&count={count}"
+        values = await _get(
+            f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}"
+            f"/Streams/{stream_id}/Data{params}"
+        )
+
+    if ctx:
+        await ctx.report_progress(1, 1, message=f"Retrieved {len(values)} values")
+    return values
 
 
 # ---------------------------------------------------------------------------
