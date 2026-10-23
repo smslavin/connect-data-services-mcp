@@ -5,20 +5,20 @@ Exposes four tools over the Sequential Data Store (SDS) API:
 
   list_namespaces      — namespaces available in the tenant
   list_streams         — streams in a namespace, with optional search filter
-  get_stream_metadata  — type and engineering context for a named stream
+  get_stream_metadata  — type, units, limits and tags for a named stream
   get_values           — process values for a stream over a time range
 
 ---
 
 LIVE MODE
-Set the three environment variables below (in .env or the shell) and the
+Set the four environment variables below (in .env or the shell) and the
 server authenticates via OAuth 2.0 client credentials, then makes real calls
 to the AVEVA Connect SDS REST API.
 
     CONNECT_TENANT_ID      Your tenant GUID from the Connect portal
     CONNECT_CLIENT_ID      Client ID from Security → Clients
     CONNECT_CLIENT_SECRET  Client secret from Security → Clients
-    CONNECT_REGION         Cloud region slug (default: uswe)
+    CONNECT_REGION         Cloud region slug, e.g. uswe or euno
 
 DEMO MODE
 Without credentials the server runs automatically in demo mode. It returns
@@ -29,6 +29,9 @@ water treatment plant with six process streams and a built-in scenario
 No AVEVA account is required for demo mode. The data is deterministic so the
 LLM sees the same values every time, making demos and training reproducible.
 
+Both modes return raw SDS-shaped JSON from a backend (sds.LiveSds or
+mock_data.DemoSds) and share one conversion to tool output (sds_types).
+
 ---
 
 Transport: stdio (default for MCPServer)
@@ -37,9 +40,8 @@ MCP:       spec 2026-07-28, mcp SDK 2.x
 """
 
 import os
-from datetime import datetime, timedelta, timezone
+from typing import Literal
 
-import httpx
 from dotenv import load_dotenv
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -47,94 +49,58 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
 import mock_data
-from sds_types import Namespace, Stream, StreamValue
+from sds import LiveSds, SdsError
+from sds_types import (Namespace, Stream, StreamDetail, StreamValue, to_namespace, to_stream,
+                       to_stream_detail, to_values, value_property)
 
 load_dotenv()
 
-_VERSION = "0.2.0"
+_VERSION = "0.3.0"
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 
-# ---------------------------------------------------------------------------
-# Mode detection
-# ---------------------------------------------------------------------------
-
-_TENANT_ID     = os.getenv("CONNECT_TENANT_ID", "")
-_CLIENT_ID     = os.getenv("CONNECT_CLIENT_ID", "")
-_CLIENT_SECRET = os.getenv("CONNECT_CLIENT_SECRET", "")
-_REGION        = os.getenv("CONNECT_REGION", "")
-
-DEMO_MODE = not all([_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET, _REGION])
+_MAX_VALUES = 1000
 
 # ---------------------------------------------------------------------------
-# Live mode: OAuth 2.0 client credentials + SDS REST calls
+# Backend selection
 #
-# AVEVA Connect uses a standard OAuth 2.0 client credentials grant.
-# Tokens expire in 3600 s; we cache and refresh automatically.
+# All four variables are required. The server falls back to demo mode if any
+# are missing rather than connecting to the wrong endpoint.
 # ---------------------------------------------------------------------------
 
-_BASE_URL = f"https://{_REGION}.datahub.connect.aveva.com"
+_CONFIG = {k: os.getenv(k, "") for k in
+           ("CONNECT_TENANT_ID", "CONNECT_CLIENT_ID", "CONNECT_CLIENT_SECRET", "CONNECT_REGION")}
 
-# Token endpoint is resolved at runtime via OpenID Connect discovery rather
-# than hardcoded. This matches AVEVA's own authentication samples and stays
-# correct if the endpoint path changes in a future release.
-_DISCOVERY_URL = f"{_BASE_URL}/identity/.well-known/openid-configuration"
+DEMO_MODE = not all(_CONFIG.values())
 
-_token: str | None = None
-_token_expiry: datetime | None = None
-_token_url: str | None = None
+backend = mock_data.DemoSds() if DEMO_MODE else LiveSds(
+    _CONFIG["CONNECT_TENANT_ID"], _CONFIG["CONNECT_CLIENT_ID"],
+    _CONFIG["CONNECT_CLIENT_SECRET"], _CONFIG["CONNECT_REGION"])
 
-
-async def _get_token_url() -> str:
-    global _token_url
-    if _token_url:
-        return _token_url
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(_DISCOVERY_URL, timeout=10)
-        resp.raise_for_status()
-    _token_url = resp.json()["token_endpoint"]
-    return _token_url
+# (namespace, stream) -> (value property, value SDS omits as default)
+_value_props: dict[tuple[str, str], tuple[str, object]] = {}
 
 
-async def _get_token() -> str:
-    global _token, _token_expiry
-    now = datetime.now(timezone.utc)
-    if _token and _token_expiry and now < _token_expiry:
-        return _token
-    token_url = await _get_token_url()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": _CLIENT_ID,
-                "client_secret": _CLIENT_SECRET,
-            },
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-    _token = payload["access_token"]
-    # Subtract 30 s so we never use a token in its last seconds
-    _token_expiry = now + timedelta(seconds=payload["expires_in"] - 30)
-    return _token
+async def _call(coro, missing: str):
+    """Await a backend call, turning SDS failures into messages the model can act on."""
+    try:
+        return await coro
+    except mock_data.NotFound:
+        raise ToolError(missing)
+    except SdsError as e:
+        if e.status == 404:
+            raise ToolError(missing)
+        raise ToolError(str(e))
 
 
-async def _get(path: str) -> dict | list:
-    """Authenticated GET against the SDS REST API."""
-    token = await _get_token()
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{_BASE_URL}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-    if resp.is_error:
-        try:
-            detail = resp.json()
-        except Exception:
-            detail = resp.text or resp.reason_phrase
-        raise ToolError(f"HTTP {resp.status_code}: {detail}")
-    return resp.json()
+async def _value_prop(namespace_id: str, stream_id: str) -> tuple[str, object]:
+    key = (namespace_id, stream_id)
+    if key not in _value_props:
+        missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
+        stream = await _call(backend.stream(namespace_id, stream_id), missing)
+        raw_type = await _call(backend.type(namespace_id, stream["TypeId"]), missing)
+        _value_props[key] = value_property(raw_type)
+    return _value_props[key]
 
 # ---------------------------------------------------------------------------
 # MCP application
@@ -175,11 +141,10 @@ async def list_namespaces() -> list[Namespace]:
       Id     — pass this as namespace_id in list_streams and get_values
       Name   — human-readable label
       Region — cloud region where the data lives
-      State  — Active or Inactive
+      State  — namespace state code as SDS reports it
     """
-    if DEMO_MODE:
-        return mock_data.get_namespaces()
-    return await _get(f"/api/v1/Tenants/{_TENANT_ID}/Namespaces")
+    raw = await _call(backend.namespaces(), "No namespaces found")
+    return [to_namespace(n) for n in raw]
 
 
 @mcp.tool(annotations=_READ_ONLY, structured_output=True)
@@ -193,31 +158,31 @@ async def list_streams(namespace_id: str, query: str = "") -> list[Stream]:
 
     Args:
       namespace_id  Namespace Id from list_namespaces
-      query         Case-insensitive filter matched against Id, Name,
-                    Description, and Tags. Leave empty to return all streams.
+      query         SDS search, matched against Id, Name, Description, and
+                    Tags. Use * as a wildcard, e.g. "FIT*" or "pg2027.P-101*".
+                    Leave empty to return all streams (up to 1000).
 
     Returns a list of stream objects. Key fields:
       Id          — pass this as stream_id in get_stream_metadata and get_values
       Name        — human-readable label
       TypeId      — SDS type (e.g. PI-Float32, PI-Boolean)
-      Description — engineering context including units and limits
+      Description — engineering context
+      InterpolationMode — TypeDefault when the stream uses its type's mode;
+                    get_stream_metadata resolves it
+    If 1000 streams come back, narrow the query; the list may be cut off.
     """
-    if DEMO_MODE:
-        return mock_data.get_streams(query)
-    params = f"?query={query}" if query else ""
-    return await _get(
-        f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}/Streams{params}"
-    )
+    raw = await _call(backend.streams(namespace_id, query),
+                      f"Namespace '{namespace_id}' not found")
+    return [to_stream(s) for s in raw]
 
 
 @mcp.tool(annotations=_READ_ONLY, structured_output=True)
-async def get_stream_metadata(namespace_id: str, stream_id: str) -> Stream:
+async def get_stream_metadata(namespace_id: str, stream_id: str) -> StreamDetail:
     """
     Get the full metadata record for a stream.
 
     Use this before querying values to understand what a stream represents:
-    its engineering units, normal operating range, and any limits noted in
-    the description.
+    its engineering units, normal operating range, and any limits.
 
     Args:
       namespace_id  Namespace Id from list_namespaces
@@ -227,19 +192,21 @@ async def get_stream_metadata(namespace_id: str, stream_id: str) -> Stream:
       Id                  — stream identifier
       Name                — human-readable label
       TypeId              — SDS type (determines value field names and types)
-      Description         — engineering context, units, limits
+      Description         — engineering context
+      Metadata            — key/value pairs set by whoever loaded the stream,
+                            typically engineering units and limits (e.g.
+                            EngineeringUnits, NormalLow, NormalHigh)
+      Tags                — free-form labels
       InterpolationMode   — how values between stored points are interpreted:
                             Continuous = linear interpolation
                             StepwiseContinuousLeading = holds last value (discrete signals)
     """
-    if DEMO_MODE:
-        result = mock_data.get_stream(stream_id)
-        if result is None:
-            raise ToolError(f"Stream '{stream_id}' not found in namespace '{namespace_id}'")
-        return result
-    return await _get(
-        f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}/Streams/{stream_id}"
-    )
+    missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
+    raw = await _call(backend.stream(namespace_id, stream_id), missing)
+    raw_type = await _call(backend.type(namespace_id, raw["TypeId"]), missing)
+    tags = await _call(backend.stream_tags(namespace_id, stream_id), missing)
+    metadata = await _call(backend.stream_metadata(namespace_id, stream_id), missing)
+    return to_stream_detail(raw, raw_type, tags, metadata)
 
 
 @mcp.tool(annotations=_READ_ONLY, structured_output=True)
@@ -249,15 +216,15 @@ async def get_values(
     start: str,
     end: str,
     count: int = 100,
+    method: Literal["sampled", "interpolated"] = "sampled",
     ctx: Context | None = None,
 ) -> list[StreamValue]:
     """
     Query process values from a stream over a time range.
 
-    Returns up to `count` values in ascending time order. For long ranges,
-    values are evenly sampled across the window — suitable for trend analysis
-    and anomaly detection. For a fine-grained look at a short event, use a
-    narrow time window with a higher count.
+    Returns at most `count` values in ascending time order, spread across the
+    whole window, so a long range gives a trend rather than its first few
+    points.
 
     Args:
       namespace_id  Namespace Id from list_namespaces
@@ -265,23 +232,33 @@ async def get_values(
       start         Range start, ISO 8601 UTC — e.g. 2026-05-29T00:00:00Z
       end           Range end,   ISO 8601 UTC — e.g. 2026-05-29T06:00:00Z
       count         Maximum values to return (default 100, max 1000)
+      method        sampled (default): stored values that represent the window.
+                      It splits the window into count/4 intervals and returns
+                      the first, last, minimum and maximum of each, so spikes
+                      and steps survive. If the window holds fewer stored values
+                      than that, every stored value is returned.
+                    interpolated: exactly `count` evenly spaced values. Easier
+                      to compare across streams, but it can step over a short
+                      spike.
 
     Returns a list of value objects.
     Numeric streams:  {"Timestamp": "2026-05-29T00:00:00Z", "Value": 2450.3}
     Boolean streams:  {"Timestamp": "2026-05-29T00:00:00Z", "Value": true}
+    A value of 0 or false is reported as such. SDS omits default values on
+    the wire; this tool fills them back in.
     """
-    count = min(count, 1000)
+    count = max(1, min(count, _MAX_VALUES))
     if ctx:
         await ctx.report_progress(0, 1, message=f"Querying {stream_id}")
 
-    if DEMO_MODE:
-        values = mock_data.get_values(stream_id, start, end, count)
+    prop, default = await _value_prop(namespace_id, stream_id)
+    missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
+    if method == "interpolated":
+        raw = await _call(backend.interpolated(namespace_id, stream_id, start, end, count), missing)
     else:
-        params = f"?startIndex={start}&endIndex={end}&count={count}"
-        values = await _get(
-            f"/api/v1/Tenants/{_TENANT_ID}/Namespaces/{namespace_id}"
-            f"/Streams/{stream_id}/Data{params}"
-        )
+        raw = await _call(backend.sampled(namespace_id, stream_id, start, end,
+                                          max(1, count // 4), prop), missing)
+    values = to_values(raw, prop, default)[:count]
 
     if ctx:
         await ctx.report_progress(1, 1, message=f"Retrieved {len(values)} values")
@@ -293,6 +270,6 @@ async def get_values(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    mode = "DEMO — Aveva Water Authority mock data" if DEMO_MODE else f"LIVE — tenant {_TENANT_ID}"
+    mode = "DEMO — Aveva Water Authority mock data" if DEMO_MODE else f"LIVE — tenant {backend.tenant_id}"
     print(f"connect-data-services MCP server starting ({mode})")
     mcp.run()
