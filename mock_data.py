@@ -14,8 +14,10 @@ The simulated scenario:
   - Chlorine dosing correlated with influent flow (FIC-601)
   - Transfer pump 201 tripped briefly during the turbidity event (P-201)
 
-Return shapes mirror AVEVA Connect Data Services SDS API responses exactly,
-so server.py works identically in demo mode and live mode.
+DemoSds returns the same raw shapes as the live SDS REST API, quirks
+included: enums are integers, tags and metadata come from their own calls,
+and a value equal to its type's default (0, False) is left out of the event.
+server.py runs both backends through the same conversion in sds_types.
 
 RandomWalk and OscillatingBool are adapted from
 graccess-mcp/simulator/mqtt_simulator.py.
@@ -37,7 +39,7 @@ NAMESPACE = {
     "Name": "AWA Production",
     "Description": "Aveva Water Authority — production process namespace",
     "Region": "westus",
-    "State": "Active",
+    "State": 1,  # as live SDS reports an active namespace
 }
 
 # ---------------------------------------------------------------------------
@@ -50,18 +52,14 @@ STREAMS = [
         "Name": "Influent Flow Rate",
         "TypeId": "PI-Float32",
         "Description": "Raw influent flow rate at plant inlet. Normal range: 1800–3600 gpm.",
-        "InterpolationMode": "Continuous",
-        "ExtrapolationMode": "None",
-        "Tags": ["Influent", "Flow", "gpm"],
+        "InterpolationMode": 0,  # Continuous
     },
     {
         "Id": "AIT-301.PV",
         "Name": "Aeration Basin DO",
         "TypeId": "PI-Float32",
         "Description": "Dissolved oxygen in aeration basin 1. Target: 2.0–4.0 mg/L.",
-        "InterpolationMode": "Continuous",
-        "ExtrapolationMode": "None",
-        "Tags": ["Secondary", "DO", "mg/L"],
+        "InterpolationMode": 0,  # Continuous
     },
     {
         "Id": "PDT-401.PV",
@@ -71,9 +69,7 @@ STREAMS = [
             "Differential pressure across sand filter bed 1. "
             "Last backwash: 48 hours ago. Backwash triggered at 8.0 ft."
         ),
-        "InterpolationMode": "Continuous",
-        "ExtrapolationMode": "None",
-        "Tags": ["Filtration", "Pressure", "ft"],
+        "InterpolationMode": 0,  # Continuous
     },
     {
         "Id": "AIT-501.PV",
@@ -83,27 +79,21 @@ STREAMS = [
             "Treated effluent turbidity at plant outlet. "
             "Permit limit: 1.0 NTU. Normal: < 0.3 NTU."
         ),
-        "InterpolationMode": "Continuous",
-        "ExtrapolationMode": "None",
-        "Tags": ["Effluent", "Turbidity", "NTU"],
+        "InterpolationMode": 0,  # Continuous
     },
     {
         "Id": "FIC-601.PV",
         "Name": "Chlorine Dosing Rate",
         "TypeId": "PI-Float32",
         "Description": "Chlorine feed rate for final disinfection, scaled to influent flow. Units: lb/day.",
-        "InterpolationMode": "Continuous",
-        "ExtrapolationMode": "None",
-        "Tags": ["Disinfection", "Chemical", "lb/day"],
+        "InterpolationMode": 0,  # Continuous
     },
     {
         "Id": "P-201.RunStatus",
         "Name": "Transfer Pump 201 Run Status",
         "TypeId": "PI-Boolean",
         "Description": "Run/stop status of secondary transfer pump 201. True = running.",
-        "InterpolationMode": "StepwiseContinuousLeading",
-        "ExtrapolationMode": "None",
-        "Tags": ["Pump", "Status"],
+        "InterpolationMode": 1,  # StepwiseContinuousLeading
     },
 ]
 
@@ -266,36 +256,125 @@ def _build_cache() -> None:
 _build_cache()
 
 # ---------------------------------------------------------------------------
-# Public API — shapes match SDS REST responses
+# Tags, metadata and types: separate SDS resources, as in a live namespace
 # ---------------------------------------------------------------------------
 
-def get_namespaces() -> list[dict]:
-    return [NAMESPACE]
+TAGS = {
+    "FIT-101.PV": ["Influent", "Flow"],
+    "AIT-301.PV": ["Secondary", "DO"],
+    "PDT-401.PV": ["Filtration", "Pressure"],
+    "AIT-501.PV": ["Effluent", "Turbidity"],
+    "FIC-601.PV": ["Disinfection", "Chemical"],
+    "P-201.RunStatus": ["Pump", "Status"],
+}
+
+METADATA = {
+    "FIT-101.PV": {"EngineeringUnits": "gpm", "NormalLow": "1800", "NormalHigh": "3600"},
+    "AIT-301.PV": {"EngineeringUnits": "mg/L", "NormalLow": "2.0", "NormalHigh": "4.0"},
+    "PDT-401.PV": {"EngineeringUnits": "ft", "BackwashSetpoint": "8.0"},
+    "AIT-501.PV": {"EngineeringUnits": "NTU", "NormalHigh": "0.3", "PermitLimit": "1.0"},
+    "FIC-601.PV": {"EngineeringUnits": "lb/day"},
+    "P-201.RunStatus": {"States": "True = running, False = stopped"},
+}
+
+TYPES = {
+    "PI-Float32": {"Id": "PI-Float32", "SdsTypeCode": 1, "Properties": [
+        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": 16}},
+        {"Id": "Value", "SdsType": {"SdsTypeCode": 13}}]},  # Single
+    "PI-Boolean": {"Id": "PI-Boolean", "SdsTypeCode": 1, "Properties": [
+        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": 16}},
+        {"Id": "Value", "SdsType": {"SdsTypeCode": 3}}]},  # Boolean
+}
+
+# ---------------------------------------------------------------------------
+# DemoSds: the same interface as sds.LiveSds, returning raw SDS JSON
+# ---------------------------------------------------------------------------
 
 
-def get_streams(query: str = "") -> list[dict]:
-    if not query:
-        return STREAMS
-    q = query.lower()
-    return [
-        s for s in STREAMS
-        if q in s["Id"].lower()
-        or q in s["Name"].lower()
-        or q in s["Description"].lower()
-        or any(q in tag.lower() for tag in s["Tags"])
-    ]
+class NotFound(Exception):
+    pass
 
 
-def get_stream(stream_id: str) -> dict | None:
-    return next((s for s in STREAMS if s["Id"] == stream_id), None)
+def _parse(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def get_values(stream_id: str, start: str, end: str, count: int = 100) -> list[dict]:
-    """Return up to `count` evenly-sampled values within [start, end]."""
-    series = _cache.get(stream_id, [])
-    window = [pt for pt in series if start <= pt["Timestamp"] <= end]
-    if len(window) <= count:
-        return window
-    # Evenly downsample to the requested count
-    step = len(window) / count
-    return [window[int(i * step)] for i in range(count)]
+def _raw(ts: datetime, value) -> dict:
+    """An SDS event: a value equal to its type's default (0, False) is left out."""
+    return {"Timestamp": _fmt(ts)} if value in (0, False) else {"Timestamp": _fmt(ts), "Value": value}
+
+
+def _series(stream_id: str) -> list[tuple[datetime, float | bool]]:
+    if stream_id not in _cache:
+        raise NotFound(stream_id)
+    return [(_parse(pt["Timestamp"]), pt["Value"]) for pt in _cache[stream_id]]
+
+
+class DemoSds:
+    tenant_id = TENANT_ID
+
+    async def namespaces(self) -> list[dict]:
+        return [NAMESPACE]
+
+    async def streams(self, namespace_id: str, query: str = "", limit: int = 1000) -> list[dict]:
+        q = query.strip("*").lower()
+        return [
+            s for s in STREAMS
+            if not q or any(q in text.lower() for text in (s["Id"], s["Name"], s["Description"], *TAGS[s["Id"]]))
+        ][:limit]
+
+    async def stream(self, namespace_id: str, stream_id: str) -> dict:
+        found = next((s for s in STREAMS if s["Id"] == stream_id), None)
+        if found is None:
+            raise NotFound(stream_id)
+        return found
+
+    async def stream_tags(self, namespace_id: str, stream_id: str) -> list[str]:
+        return TAGS[(await self.stream(namespace_id, stream_id))["Id"]]
+
+    async def stream_metadata(self, namespace_id: str, stream_id: str) -> dict:
+        return METADATA[(await self.stream(namespace_id, stream_id))["Id"]]
+
+    async def type(self, namespace_id: str, type_id: str) -> dict:
+        if type_id not in TYPES:
+            raise NotFound(type_id)
+        return TYPES[type_id]
+
+    async def sampled(self, namespace_id: str, stream_id: str, start: str, end: str,
+                      intervals: int, sample_by: str) -> list[dict]:
+        """Like SDS: the first, last, minimum and maximum stored value in each interval."""
+        lo, hi = _parse(start), _parse(end)
+        window = [(t, v) for t, v in _series(stream_id) if lo <= t <= hi]
+        width = (hi - lo) / max(intervals, 1)
+        out = []
+        for i in range(intervals):
+            a, b = lo + i * width, lo + (i + 1) * width
+            bucket = [(t, v) for t, v in window if a <= t < b or (i == intervals - 1 and t == hi)]
+            if bucket:
+                picks = {bucket[0], bucket[-1], min(bucket, key=lambda e: e[1]), max(bucket, key=lambda e: e[1])}
+                out += [_raw(t, v) for t, v in sorted(picks)]
+        return out
+
+    async def interpolated(self, namespace_id: str, stream_id: str, start: str, end: str,
+                           count: int) -> list[dict]:
+        """Evenly spaced values: linear for analog streams, last value held for discrete ones."""
+        series = _series(stream_id)
+        stepwise = (await self.stream(namespace_id, stream_id))["InterpolationMode"] != 0
+        lo, hi = _parse(start), _parse(end)
+        step = (hi - lo) / max(count - 1, 1)
+        out = []
+        for i in range(count):
+            t = lo + i * step
+            before = [(ts, v) for ts, v in series if ts <= t]
+            after = [(ts, v) for ts, v in series if ts > t]
+            if not before:
+                continue  # SDS returns nothing before a stream's first value
+            t0, v0 = before[-1]
+            if stepwise or not after or t0 == t:
+                value = v0
+            else:
+                t1, v1 = after[0]
+                value = round(v0 + (v1 - v0) * ((t - t0) / (t1 - t0)), 3)
+            out.append(_raw(t, value))
+        return out

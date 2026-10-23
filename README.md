@@ -237,12 +237,17 @@ field from the response is used in every subsequent call.
 
 Lists streams in a namespace. A stream is the SDS equivalent of a PI tag or
 historian point — a time-ordered sequence of values for a single measurement.
-The optional `query` parameter filters by Id, Name, Description, or Tags.
+The optional `query` parameter is an SDS search over Id, Name, Description,
+and Tags, with `*` as a wildcard (`FIT*`, `site1.P-101*`). It returns up to
+1000 streams, paging through SDS as needed.
 
 ### `get_stream_metadata`
 
-Returns the full metadata record for one stream: its type, description,
-engineering units, operating limits, and interpolation mode. Call this before
+Returns the full record for one stream: its type, description, interpolation
+mode, tags, and metadata. In SDS, tags and metadata are separate resources
+from the stream itself, so this tool makes four calls (stream, type, tags,
+metadata) and merges them. Metadata is where engineering units and limits
+usually live (`EngineeringUnits`, `NormalLow`, `NormalHigh`). Call this before
 querying values so the AI has the context to interpret what it gets back.
 
 The `InterpolationMode` field is worth understanding:
@@ -254,9 +259,19 @@ The `InterpolationMode` field is worth understanding:
 ### `get_values`
 
 Queries values from a stream between a start and end timestamp (ISO 8601 UTC).
-Returns up to `count` values, evenly sampled across the window. The default
-count of 100 is appropriate for trend analysis; increase it for finer
-resolution over a short event window.
+Returns at most `count` values (default 100, max 1000) spread across the whole
+window. Two methods:
+
+- `sampled` (default) uses SDS's sampled transform: it splits the window into
+  `count / 4` intervals and returns the first, last, minimum and maximum stored
+  value in each, so spikes and steps survive the downsampling. On a window
+  with fewer stored values than that, it returns every stored value.
+- `interpolated` returns exactly `count` evenly spaced values. These are easier
+  to line up across streams, but can step over a short spike.
+
+SDS leaves a value out of an event when it equals the type's default, so a
+stopped pump's flow of 0 arrives as a timestamp with no value. The tool looks
+up the stream's type and fills those defaults back in (0 or false).
 
 ---
 
@@ -331,11 +346,34 @@ without reading the implementation.
 
 **Why structured output instead of plain JSON text?**
 
-Each tool's return type is a `TypedDict` (`sds_types.py`) matching the SDS
-response shape exactly, and `structured_output=True` turns that into a real
-MCP `output_schema`. Clients get typed `structured_content` back instead of
+Each tool's return type is a `TypedDict` (`sds_types.py`), and
+`structured_output=True` turns that into a real MCP `output_schema`. Clients get typed `structured_content` back instead of
 a JSON blob they have to parse out of a text block — the same shift REST
 APIs made from HTML scraping to typed JSON responses.
+
+**Why do both modes return raw SDS JSON?**
+
+Live SDS responses don't fit a strict schema as they arrive. Enums come back
+as integers (`"InterpolationMode": 1`), and any property holding its default
+is left out entirely. The demo backend (`mock_data.DemoSds`) reproduces those
+quirks, and both backends run through the same conversion in
+`sds_types.py`. A demo backend that returned tidy, schema-shaped data would
+pass every test while live mode failed, which is how earlier versions broke
+in live mode.
+
+---
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+`tests/test_sds_types.py` runs response shapes recorded from a live namespace
+through the conversion. `tests/test_tools.py` calls every tool through an
+in-memory MCP client against the demo backend, so the output schemas are
+checked as a real client would check them. Neither needs an AVEVA account.
 
 ---
 
@@ -343,10 +381,13 @@ APIs made from HTML scraping to typed JSON responses.
 
 ```
 connect-data-services-mcp/
-├── server.py       Main file: MCPServer app, tool definitions, OAuth client
-├── sds_types.py    TypedDict response shapes used for structured tool output
-├── mock_data.py    Demo data: stream definitions and time-series generation
+├── server.py       Main file: MCPServer app and tool definitions
+├── sds.py          Live backend: OAuth client and SDS REST calls
+├── mock_data.py    Demo backend: the same calls over generated data
+├── sds_types.py    Tool output shapes, built from raw SDS responses
+├── tests/          Conversion and tool tests (no account needed)
 ├── requirements.txt
+├── requirements-dev.txt
 ├── .env.example    Credential template — copy to .env, never commit .env
 └── .gitignore
 ```
