@@ -19,6 +19,24 @@ LIVE_TYPE_INT32 = {
         {"Id": "Value", "Name": "Value", "SdsType": {"SdsTypeCode": 9}},
     ],
 }
+# GET .../Streams/{id}/Resolved, recorded 2026-10-27 through a community.
+# Codes and modes come back as names; the stream has no TypeId.
+LIVE_RESOLVED = {
+    "Resolved": True, "Id": "pg2027.P-101.FIT-101.PV", "Name": "P-101 discharge flow",
+    "Description": "Pump P-101 discharge flow, magnetic flow meter.",
+    "CreatedDate": "2026-01-01T00:00:00Z", "ModifiedDate": "2026-01-01T00:00:00Z",
+    "Type": {
+        "Id": "pg2027.TimeValue.Double", "Name": "Timestamp and float64 value", "SdsTypeCode": "Object",
+        "ExtrapolationMode": "All", "InterpolationMode": "Continuous", "Properties": [
+            {"Id": "Timestamp", "Name": "Timestamp", "IsKey": True, "SdsType": {
+                "Properties": [], "SdsTypeCode": "DateTime", "ExtrapolationMode": "All",
+                "InterpolationMode": "Continuous"}},
+            {"Id": "Value", "Name": "Value", "SdsType": {
+                "Properties": [], "SdsTypeCode": "Double", "ExtrapolationMode": "All",
+                "InterpolationMode": "Continuous"}},
+        ],
+    },
+}
 # Interpolated read across a pump stop: the zero values have no Value key.
 LIVE_VALUES = [
     {"Timestamp": "2027-06-15T09:00:00Z", "Value": 2},
@@ -27,7 +45,7 @@ LIVE_VALUES = [
 ]
 
 
-def _type(code: int) -> dict:
+def _type(code: int | str) -> dict:
     return {"Properties": [{"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": 16}},
                            {"Id": "Value", "SdsType": {"SdsTypeCode": code}}]}
 
@@ -45,7 +63,7 @@ def test_stream_names_integer_interpolation_mode():
 
 
 def test_stream_detail_carries_tags_and_metadata():
-    out = to_stream_detail(LIVE_STREAM, LIVE_TYPE_INT32, ["pg2027", "P-101"],
+    out = to_stream_detail({**LIVE_STREAM, "Type": LIVE_TYPE_INT32}, ["pg2027", "P-101"],
                            {"EngineeringUnits": "", "Equipment": "P-101"})
     assert out["Tags"] == ["pg2027", "P-101"]
     assert out["Metadata"]["Equipment"] == "P-101"
@@ -54,8 +72,16 @@ def test_stream_detail_carries_tags_and_metadata():
 def test_stream_without_mode_inherits_its_type():
     raw = {k: v for k, v in LIVE_STREAM.items() if k != "InterpolationMode"}
     assert to_stream(raw)["InterpolationMode"] == "TypeDefault"
-    assert to_stream_detail(raw, {**LIVE_TYPE_INT32, "InterpolationMode": 3}, [], {})["InterpolationMode"] == "Discrete"
-    assert to_stream_detail(raw, LIVE_TYPE_INT32, [], {})["InterpolationMode"] == "Continuous"
+    assert to_stream_detail({**raw, "Type": {**LIVE_TYPE_INT32, "InterpolationMode": 3}}, [], {}
+                            )["InterpolationMode"] == "Discrete"
+    assert to_stream_detail({**raw, "Type": LIVE_TYPE_INT32}, [], {})["InterpolationMode"] == "Continuous"
+
+
+def test_resolved_stream_takes_type_id_and_mode_from_its_type():
+    out = to_stream_detail(LIVE_RESOLVED, [], {})
+    assert out["TypeId"] == "pg2027.TimeValue.Double"
+    assert out["InterpolationMode"] == "Continuous"
+    assert value_property(LIVE_RESOLVED["Type"]) == ("Value", 0)
 
 
 def test_omitted_value_defaults_by_type():
@@ -64,6 +90,9 @@ def test_omitted_value_defaults_by_type():
     assert value_property(_type(3)) == ("Value", False)  # Boolean
     assert value_property(_type(114)) == ("Value", None)  # NullableDouble
     assert value_property(_type(18)) == ("Value", None)  # String
+    assert value_property(_type("Int32")) == ("Value", 0)  # /Resolved spells codes as names
+    assert value_property(_type("Boolean")) == ("Value", False)
+    assert value_property(_type("String")) == ("Value", None)
 
 
 def test_values_fill_omitted_zero():

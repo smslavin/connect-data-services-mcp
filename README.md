@@ -189,6 +189,25 @@ connect-data-services MCP server starting (LIVE — tenant your-tenant-id)
 
 All four tools now make real calls to your tenant's SDS namespace.
 
+**Reading a CONNECT community**
+
+To read streams another tenant shares with you through a community, also set:
+
+```
+CONNECT_COMMUNITY_ID=community-id
+```
+
+`list_namespaces` then returns the namespaces that hold shared streams, named
+after the tenant that shares them, and `list_streams` uses the community
+search, so it shows only shared streams. The other tools read from the
+owner's path with a `Community-Id` header.
+
+Community access is granted per client, not per tenant. After your tenant
+joins, add the client to the community (portal, or
+`PUT /api/v1-preview/Communities/{id}/Tenants/{tenantId}/ClientCredentialClients/{clientId}`
+on the `uswe` host), then allow about 30 seconds. Until then every call
+returns 403.
+
 ---
 
 ## Demo scenario

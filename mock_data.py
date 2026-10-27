@@ -15,8 +15,10 @@ The simulated scenario:
   - Transfer pump 201 tripped briefly during the turbidity event (P-201)
 
 DemoSds returns the same raw shapes as the live SDS REST API, quirks
-included: enums are integers, tags and metadata come from their own calls,
-and a value equal to its type's default (0, False) is left out of the event.
+included: enums are integers (names, in a resolved stream), tags and
+metadata come from their own calls, and a value equal to its type's default
+(0, False) is left out of the event. DemoSds(community_id=...) answers as a
+community member would, with one stream left unshared.
 server.py runs both backends through the same conversion in sds_types.
 
 RandomWalk and OscillatingBool are adapted from
@@ -27,6 +29,8 @@ import hashlib
 import math
 import random
 from datetime import datetime, timedelta, timezone
+
+from sds import SdsError
 
 # ---------------------------------------------------------------------------
 # Namespace definition
@@ -277,14 +281,20 @@ METADATA = {
     "P-201.RunStatus": {"States": "True = running, False = stopped"},
 }
 
+# As GET .../Streams/{id}/Resolved inlines them: codes and modes spelled as names.
 TYPES = {
-    "PI-Float32": {"Id": "PI-Float32", "SdsTypeCode": 1, "Properties": [
-        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": 16}},
-        {"Id": "Value", "SdsType": {"SdsTypeCode": 13}}]},  # Single
-    "PI-Boolean": {"Id": "PI-Boolean", "SdsTypeCode": 1, "Properties": [
-        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": 16}},
-        {"Id": "Value", "SdsType": {"SdsTypeCode": 3}}]},  # Boolean
+    "PI-Float32": {"Id": "PI-Float32", "SdsTypeCode": "Object", "InterpolationMode": "Continuous", "Properties": [
+        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": "DateTime"}},
+        {"Id": "Value", "SdsType": {"SdsTypeCode": "Single"}}]},
+    "PI-Boolean": {"Id": "PI-Boolean", "SdsTypeCode": "Object", "InterpolationMode": "Continuous", "Properties": [
+        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": "DateTime"}},
+        {"Id": "Value", "SdsType": {"SdsTypeCode": "Boolean"}}]},
 }
+
+# Community mode: a member sees the owner's streams through the community
+# search, every stream but this one is shared, and reading it is forbidden.
+COMMUNITY_OWNER = "Aveva Water Authority"
+UNSHARED = {"P-201.RunStatus"}
 
 # ---------------------------------------------------------------------------
 # DemoSds: the same interface as sds.LiveSds, returning raw SDS JSON
@@ -314,36 +324,56 @@ def _series(stream_id: str) -> list[tuple[datetime, float | bool]]:
 class DemoSds:
     tenant_id = TENANT_ID
 
+    def __init__(self, community_id: str = ""):
+        self.community_id = community_id
+
+    def _stream(self, stream_id: str) -> dict:
+        found = next((s for s in STREAMS if s["Id"] == stream_id), None)
+        if found is None:
+            raise NotFound(stream_id)
+        if self.community_id and stream_id in UNSHARED:
+            raise SdsError(403, {"OperationId": "demo"})  # what live SDS sends for an unshared stream
+        return found
+
     async def namespaces(self) -> list[dict]:
+        if self.community_id:  # the shape LiveSds builds from community search results
+            return [{"Id": NAMESPACE["Id"], "Name": COMMUNITY_OWNER, "Region": "westus",
+                     "Description": f"Streams shared by {COMMUNITY_OWNER} through community {self.community_id}"}]
         return [NAMESPACE]
 
     async def streams(self, namespace_id: str, query: str = "", limit: int = 1000) -> list[dict]:
         q = query.strip("*").lower()
-        return [
+        found = [
             s for s in STREAMS
             if not q or any(q in text.lower() for text in (s["Id"], s["Name"], s["Description"], *TAGS[s["Id"]]))
-        ][:limit]
+        ]
+        if not self.community_id:
+            return found[:limit]
+        # Community search results: no interpolation mode, plus where each stream lives.
+        return [{"Id": s["Id"], "Name": s["Name"], "TypeId": s["TypeId"], "Description": s["Description"],
+                 "Self": f"https://westus.example/api/v1/tenants/{TENANT_ID}/namespaces/{NAMESPACE['Id']}"
+                         f"/streams/{s['Id']}",
+                 "TenantId": TENANT_ID, "TenantName": COMMUNITY_OWNER, "NamespaceId": NAMESPACE["Id"],
+                 "CommunityId": self.community_id}
+                for s in found if s["Id"] not in UNSHARED][:limit]
 
-    async def stream(self, namespace_id: str, stream_id: str) -> dict:
-        found = next((s for s in STREAMS if s["Id"] == stream_id), None)
-        if found is None:
-            raise NotFound(stream_id)
-        return found
+    async def resolved(self, namespace_id: str, stream_id: str) -> dict:
+        s = self._stream(stream_id)
+        out = {k: v for k, v in s.items() if k not in ("TypeId", "InterpolationMode")}
+        if s["InterpolationMode"]:  # left out at its default, and spelled as a name
+            out["InterpolationMode"] = "StepwiseContinuousLeading"
+        return {"Resolved": True, **out, "Type": TYPES[s["TypeId"]]}
 
     async def stream_tags(self, namespace_id: str, stream_id: str) -> list[str]:
-        return TAGS[(await self.stream(namespace_id, stream_id))["Id"]]
+        return TAGS[self._stream(stream_id)["Id"]]
 
     async def stream_metadata(self, namespace_id: str, stream_id: str) -> dict:
-        return METADATA[(await self.stream(namespace_id, stream_id))["Id"]]
-
-    async def type(self, namespace_id: str, type_id: str) -> dict:
-        if type_id not in TYPES:
-            raise NotFound(type_id)
-        return TYPES[type_id]
+        return METADATA[self._stream(stream_id)["Id"]]
 
     async def sampled(self, namespace_id: str, stream_id: str, start: str, end: str,
                       intervals: int, sample_by: str) -> list[dict]:
         """Like SDS: the first, last, minimum and maximum stored value in each interval."""
+        self._stream(stream_id)
         lo, hi = _parse(start), _parse(end)
         window = [(t, v) for t, v in _series(stream_id) if lo <= t <= hi]
         width = (hi - lo) / max(intervals, 1)
@@ -359,8 +389,8 @@ class DemoSds:
     async def interpolated(self, namespace_id: str, stream_id: str, start: str, end: str,
                            count: int) -> list[dict]:
         """Evenly spaced values: linear for analog streams, last value held for discrete ones."""
+        stepwise = self._stream(stream_id)["InterpolationMode"] != 0
         series = _series(stream_id)
-        stepwise = (await self.stream(namespace_id, stream_id))["InterpolationMode"] != 0
         lo, hi = _parse(start), _parse(end)
         step = (hi - lo) / max(count - 1, 1)
         out = []
