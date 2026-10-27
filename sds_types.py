@@ -23,8 +23,10 @@ EXTRAPOLATION_MODES = {0: "All", 1: "None", 2: "Forward", 3: "Backward"}
 
 # SdsTypeCode values whose default, when SDS leaves the property out, is 0 or
 # False. Nullable codes (100 and up) and strings default to null instead.
-_BOOLEAN = 3
-_NUMERIC = range(4, 16)  # Char through Decimal
+# /Types reports codes as integers; /Resolved spells them as names.
+_BOOLEAN = (3, "Boolean")
+_NUMERIC = (*range(4, 16), "Char", "SByte", "Byte", "Int16", "UInt16", "Int32", "UInt32",
+            "Int64", "UInt64", "Single", "Double", "Decimal")
 
 
 class Namespace(TypedDict):
@@ -74,22 +76,25 @@ TYPE_DEFAULT = "TypeDefault"
 def to_stream(raw: dict) -> Stream:
     # Every field is always present: an MCP output schema has no room for a
     # missing key. SDS omits ExtrapolationMode when it is All (the default),
-    # and InterpolationMode when the stream inherits its type's mode.
+    # and InterpolationMode when the stream inherits its type's mode. A
+    # resolved stream carries its type inline instead of a TypeId.
     return {
         "Id": raw["Id"],
         "Name": raw.get("Name", raw["Id"]),
-        "TypeId": raw.get("TypeId", ""),
+        "TypeId": raw.get("TypeId") or raw.get("Type", {}).get("Id", ""),
         "Description": raw.get("Description", ""),
         "InterpolationMode": _enum(raw.get("InterpolationMode", TYPE_DEFAULT), INTERPOLATION_MODES),
         "ExtrapolationMode": _enum(raw.get("ExtrapolationMode", 0), EXTRAPOLATION_MODES),
     }
 
 
-def to_stream_detail(raw: dict, raw_type: dict, tags: list, metadata: dict) -> StreamDetail:
-    out: StreamDetail = {**to_stream(raw), "Tags": list(tags),
+def to_stream_detail(resolved: dict, tags: list, metadata: dict) -> StreamDetail:
+    """From a resolved stream (GET .../Streams/{id}/Resolved), which inlines its type."""
+    out: StreamDetail = {**to_stream(resolved), "Tags": list(tags),
                          "Metadata": {k: str(v) for k, v in metadata.items()}}
     if out["InterpolationMode"] == TYPE_DEFAULT:
-        out["InterpolationMode"] = _enum(raw_type.get("InterpolationMode", 0), INTERPOLATION_MODES)
+        type_mode = resolved.get("Type", {}).get("InterpolationMode", 0)
+        out["InterpolationMode"] = _enum(type_mode, INTERPOLATION_MODES)
     return out
 
 
@@ -98,7 +103,7 @@ def value_property(raw_type: dict) -> tuple[str, Any]:
     props = [p for p in raw_type.get("Properties", []) if not p.get("IsKey")]
     prop = next((p for p in props if p["Id"] == "Value"), props[0] if props else {"Id": "Value"})
     code = prop.get("SdsType", {}).get("SdsTypeCode")
-    default = False if code == _BOOLEAN else 0 if code in _NUMERIC else None
+    default = False if code in _BOOLEAN else 0 if code in _NUMERIC else None
     return prop["Id"], default
 
 

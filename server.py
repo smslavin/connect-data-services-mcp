@@ -20,6 +20,12 @@ to the AVEVA Connect SDS REST API.
     CONNECT_CLIENT_SECRET  Client secret from Security → Clients
     CONNECT_REGION         Cloud region slug, e.g. uswe or euno
 
+COMMUNITY MODE
+Also set CONNECT_COMMUNITY_ID to read streams another tenant shares through
+a CONNECT community instead of your own namespaces. list_namespaces then
+returns the namespaces that hold shared streams. The client must be added to
+the community (it is per client, not per tenant).
+
 DEMO MODE
 Without credentials the server runs automatically in demo mode. It returns
 pre-generated data for the Aveva Water Authority (AWA) namespace — a fictional
@@ -55,7 +61,7 @@ from sds_types import (Namespace, Stream, StreamDetail, StreamValue, to_namespac
 
 load_dotenv()
 
-_VERSION = "0.3.0"
+_VERSION = "0.4.0"
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 
@@ -75,7 +81,8 @@ DEMO_MODE = not all(_CONFIG.values())
 
 backend = mock_data.DemoSds() if DEMO_MODE else LiveSds(
     _CONFIG["CONNECT_TENANT_ID"], _CONFIG["CONNECT_CLIENT_ID"],
-    _CONFIG["CONNECT_CLIENT_SECRET"], _CONFIG["CONNECT_REGION"])
+    _CONFIG["CONNECT_CLIENT_SECRET"], _CONFIG["CONNECT_REGION"],
+    community_id=os.getenv("CONNECT_COMMUNITY_ID", ""))
 
 # (namespace, stream) -> (value property, value SDS omits as default)
 _value_props: dict[tuple[str, str], tuple[str, object]] = {}
@@ -90,16 +97,23 @@ async def _call(coro, missing: str):
     except SdsError as e:
         if e.status == 404:
             raise ToolError(missing)
+        if e.status == 403:
+            raise ToolError(f"{missing}, or this client may not read it")
         raise ToolError(str(e))
+
+
+async def _resolved(namespace_id: str, stream_id: str) -> dict:
+    """The stream with its type inlined; caches the value property get_values needs."""
+    missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
+    resolved = await _call(backend.resolved(namespace_id, stream_id), missing)
+    _value_props[(namespace_id, stream_id)] = value_property(resolved.get("Type", {}))
+    return resolved
 
 
 async def _value_prop(namespace_id: str, stream_id: str) -> tuple[str, object]:
     key = (namespace_id, stream_id)
     if key not in _value_props:
-        missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
-        stream = await _call(backend.stream(namespace_id, stream_id), missing)
-        raw_type = await _call(backend.type(namespace_id, stream["TypeId"]), missing)
-        _value_props[key] = value_property(raw_type)
+        await _resolved(namespace_id, stream_id)
     return _value_props[key]
 
 # ---------------------------------------------------------------------------
@@ -136,6 +150,9 @@ async def list_namespaces() -> list[Namespace]:
     Namespaces partition data within a tenant — typically one per site or
     operational area. Each namespace is an independent time-series store.
     Use the returned Id to scope all subsequent calls.
+
+    When the server reads a CONNECT community, this lists the namespaces that
+    hold streams shared with it; Name is the tenant that shares them.
 
     Returns a list of namespace objects. Key fields:
       Id     — pass this as namespace_id in list_streams and get_values
@@ -202,11 +219,10 @@ async def get_stream_metadata(namespace_id: str, stream_id: str) -> StreamDetail
                             StepwiseContinuousLeading = holds last value (discrete signals)
     """
     missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
-    raw = await _call(backend.stream(namespace_id, stream_id), missing)
-    raw_type = await _call(backend.type(namespace_id, raw["TypeId"]), missing)
+    resolved = await _resolved(namespace_id, stream_id)
     tags = await _call(backend.stream_tags(namespace_id, stream_id), missing)
     metadata = await _call(backend.stream_metadata(namespace_id, stream_id), missing)
-    return to_stream_detail(raw, raw_type, tags, metadata)
+    return to_stream_detail(resolved, tags, metadata)
 
 
 @mcp.tool(annotations=_READ_ONLY, structured_output=True)
@@ -271,5 +287,7 @@ async def get_values(
 
 if __name__ == "__main__":
     mode = "DEMO — Aveva Water Authority mock data" if DEMO_MODE else f"LIVE — tenant {backend.tenant_id}"
+    if not DEMO_MODE and backend.community_id:
+        mode += f", community {backend.community_id}"
     print(f"connect-data-services MCP server starting ({mode})")
     mcp.run()
