@@ -13,6 +13,7 @@ The simulated scenario:
   - Effluent turbidity spike ~6 hours ago, now recovered (AIT-501)
   - Chlorine dosing correlated with influent flow (FIC-601)
   - Transfer pump 201 tripped briefly during the turbidity event (P-201)
+  - An operator shift log telling the same story in text (OPS.ShiftLog)
 
 DemoSds returns the same raw shapes as the live SDS REST API, quirks
 included: enums are integers (names, in a resolved stream), tags and
@@ -99,6 +100,27 @@ STREAMS = [
         "Description": "Run/stop status of secondary transfer pump 201. True = running.",
         "InterpolationMode": 1,  # StepwiseContinuousLeading
     },
+    {
+        "Id": "OPS.ShiftLog",
+        "Name": "Operator Shift Log",
+        "TypeId": "TimeString",
+        "Description": "Operator log entries: handovers, alarms, work orders and actions taken.",
+        "InterpolationMode": 3,  # Discrete
+    },
+]
+
+# Shift log entries, as (hours before now, text). They line up with the
+# scenario in the process streams.
+SHIFT_LOG = [
+    (47.9, "Shift A handover: all units normal. Filter 1 backwashed at start of shift."),
+    (24.1, "WO-4471 opened: P-201 coupling inspection. Pump locked out."),
+    (23.7, "WO-4471 closed: coupling OK, P-201 returned to service."),
+    (7.0, "P-201 tripped on high motor current. Standby transfer path in use."),
+    (6.9, "ALM AIT-501 HI: effluent turbidity above 0.3 NTU."),
+    (6.4, "P-201 reset and restarted by operator. Cause under investigation."),
+    (6.1, "AIT-501 above 1.0 NTU permit limit. Supervisor notified, grab sample sent to lab."),
+    (5.4, "AIT-501 back below 0.3 NTU. Permit exceedance report to be filed."),
+    (2.0, "Filter 1 head loss near backwash setpoint. Backwash scheduled for next shift."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -254,7 +276,11 @@ def _build_cache() -> None:
     now -= timedelta(minutes=now.minute % _INTERVAL_MINUTES)
     timestamps = [now - timedelta(minutes=_INTERVAL_MINUTES * i) for i in range(_N_POINTS, 0, -1)]
     for stream in STREAMS:
+        if stream["TypeId"] == "TimeString":
+            continue
         _cache[stream["Id"]] = _generate_series(stream["Id"], timestamps)
+    _cache["OPS.ShiftLog"] = [{"Timestamp": _fmt(now - timedelta(hours=h)), "Value": text}
+                              for h, text in SHIFT_LOG]
 
 
 _build_cache()
@@ -270,6 +296,7 @@ TAGS = {
     "AIT-501.PV": ["Effluent", "Turbidity"],
     "FIC-601.PV": ["Disinfection", "Chemical"],
     "P-201.RunStatus": ["Pump", "Status"],
+    "OPS.ShiftLog": ["Operations", "Log"],
 }
 
 METADATA = {
@@ -279,6 +306,7 @@ METADATA = {
     "AIT-501.PV": {"EngineeringUnits": "NTU", "NormalHigh": "0.3", "PermitLimit": "1.0"},
     "FIC-601.PV": {"EngineeringUnits": "lb/day"},
     "P-201.RunStatus": {"States": "True = running, False = stopped"},
+    "OPS.ShiftLog": {"Source": "Operator logbook"},
 }
 
 # As GET .../Streams/{id}/Resolved inlines them: codes and modes spelled as names.
@@ -289,6 +317,9 @@ TYPES = {
     "PI-Boolean": {"Id": "PI-Boolean", "SdsTypeCode": "Object", "InterpolationMode": "Continuous", "Properties": [
         {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": "DateTime"}},
         {"Id": "Value", "SdsType": {"SdsTypeCode": "Boolean"}}]},
+    "TimeString": {"Id": "TimeString", "SdsTypeCode": "Object", "InterpolationMode": "Continuous", "Properties": [
+        {"Id": "Timestamp", "IsKey": True, "SdsType": {"SdsTypeCode": "DateTime"}},
+        {"Id": "Value", "SdsType": {"SdsTypeCode": "String"}}]},
 }
 
 # Community mode: a member sees the owner's streams through the community
@@ -311,11 +342,12 @@ def _parse(ts: str) -> datetime:
 
 
 def _raw(ts: datetime, value) -> dict:
-    """An SDS event: a value equal to its type's default (0, False) is left out."""
-    return {"Timestamp": _fmt(ts)} if value in (0, False) else {"Timestamp": _fmt(ts), "Value": value}
+    """An SDS event: a value equal to its type's default (0, False; null for text) is left out."""
+    omit = value is None or (not isinstance(value, str) and value in (0, False))
+    return {"Timestamp": _fmt(ts)} if omit else {"Timestamp": _fmt(ts), "Value": value}
 
 
-def _series(stream_id: str) -> list[tuple[datetime, float | bool]]:
+def _series(stream_id: str) -> list[tuple[datetime, float | bool | str]]:
     if stream_id not in _cache:
         raise NotFound(stream_id)
     return [(_parse(pt["Timestamp"]), pt["Value"]) for pt in _cache[stream_id]]
@@ -361,7 +393,7 @@ class DemoSds:
         s = self._stream(stream_id)
         out = {k: v for k, v in s.items() if k not in ("TypeId", "InterpolationMode")}
         if s["InterpolationMode"]:  # left out at its default, and spelled as a name
-            out["InterpolationMode"] = "StepwiseContinuousLeading"
+            out["InterpolationMode"] = {1: "StepwiseContinuousLeading", 3: "Discrete"}[s["InterpolationMode"]]
         return {"Resolved": True, **out, "Type": TYPES[s["TypeId"]]}
 
     async def stream_tags(self, namespace_id: str, stream_id: str) -> list[str]:
@@ -373,7 +405,8 @@ class DemoSds:
     async def sampled(self, namespace_id: str, stream_id: str, start: str, end: str,
                       intervals: int, sample_by: str) -> list[dict]:
         """Like SDS: the first, last, minimum and maximum stored value in each interval."""
-        self._stream(stream_id)
+        if self._stream(stream_id)["TypeId"] == "TimeString":  # as live SDS answers
+            raise SdsError(400, {"Reason": "Specified SdsTypeProperty Value does not support this operation."})
         lo, hi = _parse(start), _parse(end)
         window = [(t, v) for t, v in _series(stream_id) if lo <= t <= hi]
         width = (hi - lo) / max(intervals, 1)
@@ -385,6 +418,13 @@ class DemoSds:
                 picks = {bucket[0], bucket[-1], min(bucket, key=lambda e: e[1]), max(bucket, key=lambda e: e[1])}
                 out += [_raw(t, v) for t, v in sorted(picks)]
         return out
+
+    async def stored(self, namespace_id: str, stream_id: str, start: str, end: str,
+                     count: int) -> list[dict]:
+        """The first `count` stored events in the window, oldest first."""
+        self._stream(stream_id)
+        lo, hi = _parse(start), _parse(end)
+        return [_raw(t, v) for t, v in _series(stream_id) if lo <= t <= hi][:count]
 
     async def interpolated(self, namespace_id: str, stream_id: str, start: str, end: str,
                            count: int) -> list[dict]:

@@ -110,3 +110,34 @@ async def test_community_unshared_stream_says_why(community):
         result = await client.call_tool("get_values", {"namespace_id": NS, "stream_id": "P-201.RunStatus", **WINDOW})
     assert result.is_error
     assert "may not read it" in result.content[0].text
+
+
+LOG = "OPS.ShiftLog"
+
+
+async def test_text_stream_reports_its_value_type():
+    detail = await call("get_stream_metadata", namespace_id=NS, stream_id=LOG)
+    assert detail["ValueType"] == "text"
+    assert detail["InterpolationMode"] == "Discrete"
+    numeric = await call("get_stream_metadata", namespace_id=NS, stream_id="FIT-101.PV")
+    assert numeric["ValueType"] == "number"
+
+
+@pytest.mark.parametrize("method", ["sampled", "interpolated"])
+async def test_text_values_are_the_stored_events(method):
+    values = await call("get_values", namespace_id=NS, stream_id=LOG, method=method, **WINDOW)
+    texts = [v["Value"] for v in values]
+    assert len(texts) == len(mock_data.SHIFT_LOG)  # every entry, none invented between them
+    assert any("ALM AIT-501 HI" in t for t in texts)
+    assert [v["Timestamp"] for v in values] == sorted(v["Timestamp"] for v in values)
+
+
+async def test_text_values_stop_at_count():
+    values = await call("get_values", namespace_id=NS, stream_id=LOG, count=3, **WINDOW)
+    assert [v["Value"] for v in values] == [t for _, t in mock_data.SHIFT_LOG[:3]]
+
+
+async def test_demo_refuses_to_sample_text_like_sds():
+    with pytest.raises(server.SdsError) as e:
+        await mock_data.DemoSds().sampled(NS, LOG, WINDOW["start"], WINDOW["end"], 4, "Value")
+    assert e.value.status == 400

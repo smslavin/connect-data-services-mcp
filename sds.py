@@ -159,6 +159,14 @@ class LiveSds:
         return await self._get(await self._stream(namespace_id, stream_id) + "/Data/Transform/Sampled", {
             "startIndex": start, "endIndex": end, "intervals": intervals, "sampleBy": sample_by})
 
+    async def stored(self, namespace_id: str, stream_id: str, start: str, end: str,
+                     count: int) -> list[dict]:
+        """The first `count` stored events in the window. Sampling a string fails with 400,
+        and interpolating one invents events, so text is read this way."""
+        page = await self._get(await self._stream(namespace_id, stream_id) + "/Data", {
+            "startIndex": start, "endIndex": end, "count": count, "continuationToken": ""})
+        return page["Results"]  # paged form: SDS requires continuationToken with count
+
     async def interpolated(self, namespace_id: str, stream_id: str, start: str, end: str,
                            count: int) -> list[dict]:
         return await self._get(await self._stream(namespace_id, stream_id) + "/Data/Transform/Interpolated", {

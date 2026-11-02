@@ -81,18 +81,22 @@ def test_resolved_stream_takes_type_id_and_mode_from_its_type():
     out = to_stream_detail(LIVE_RESOLVED, [], {})
     assert out["TypeId"] == "pg2027.TimeValue.Double"
     assert out["InterpolationMode"] == "Continuous"
-    assert value_property(LIVE_RESOLVED["Type"]) == ("Value", 0)
+    assert value_property(LIVE_RESOLVED["Type"]) == ("Value", 0, "number")
+    assert out["ValueType"] == "number"
 
 
-def test_omitted_value_defaults_by_type():
-    assert value_property(LIVE_TYPE_INT32) == ("Value", 0)
-    assert value_property(_type(14)) == ("Value", 0)  # Double
-    assert value_property(_type(3)) == ("Value", False)  # Boolean
-    assert value_property(_type(114)) == ("Value", None)  # NullableDouble
-    assert value_property(_type(18)) == ("Value", None)  # String
-    assert value_property(_type("Int32")) == ("Value", 0)  # /Resolved spells codes as names
-    assert value_property(_type("Boolean")) == ("Value", False)
-    assert value_property(_type("String")) == ("Value", None)
+def test_omitted_value_defaults_and_value_type_by_type():
+    assert value_property(LIVE_TYPE_INT32) == ("Value", 0, "number")
+    assert value_property(_type(14)) == ("Value", 0, "number")  # Double
+    assert value_property(_type(3)) == ("Value", False, "boolean")  # Boolean
+    assert value_property(_type(114)) == ("Value", None, "number")  # NullableDouble
+    assert value_property(_type(103)) == ("Value", None, "boolean")  # NullableBoolean
+    assert value_property(_type(18)) == ("Value", None, "text")  # String
+    assert value_property(_type(16)) == ("Value", None, "text")  # DateTime: SDS can't sample it either
+    assert value_property(_type("Int32")) == ("Value", 0, "number")  # /Resolved spells codes as names
+    assert value_property(_type("NullableInt32")) == ("Value", None, "number")
+    assert value_property(_type("Boolean")) == ("Value", False, "boolean")
+    assert value_property(_type("String")) == ("Value", None, "text")
 
 
 def test_values_fill_omitted_zero():

@@ -33,7 +33,7 @@ Building those tools is not a black box. This project shows the full picture:
 When no credentials are configured the server runs in **demo mode**, returning
 pre-generated data for a fictional utility: **Aveva Water Authority (AWA)**.
 
-The AWA namespace contains six streams:
+The AWA namespace contains six process streams and an operator log:
 
 | Stream ID | Description | Units |
 |---|---|---|
@@ -43,6 +43,7 @@ The AWA namespace contains six streams:
 | `AIT-501.PV` | Effluent turbidity — spike ~6 hours ago, now recovered | NTU |
 | `FIC-601.PV` | Chlorine dosing rate — correlated with influent flow | lb/day |
 | `P-201.RunStatus` | Transfer pump 201 run/stop status | Boolean |
+| `OPS.ShiftLog` | Operator shift log: alarms, work orders, actions taken | text |
 
 The data is designed to give the AI something meaningful to say. The filter
 head loss drift, the turbidity exceedance, the pump trip, and the dosing
@@ -291,6 +292,13 @@ window. Two methods:
 SDS leaves a value out of an event when it equals the type's default, so a
 stopped pump's flow of 0 arrives as a timestamp with no value. The tool looks
 up the stream's type and fills those defaults back in (0 or false).
+
+Text streams (alarm messages, work orders, shift notes) work differently. SDS
+can't sample a string (it answers 400), and interpolating one invents events
+between the real ones. For a stream whose `ValueType` is `text`, the tool
+returns the events stored in the window, oldest first, up to `count`, and
+ignores `method`. When exactly `count` come back, call again from just after
+the last timestamp.
 
 ---
 
