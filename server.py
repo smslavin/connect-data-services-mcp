@@ -29,8 +29,9 @@ the community (it is per client, not per tenant).
 DEMO MODE
 Without credentials the server runs automatically in demo mode. It returns
 pre-generated data for the Aveva Water Authority (AWA) namespace — a fictional
-water treatment plant with six process streams and a built-in scenario
-(drifting filter head loss, a past turbidity exceedance, a pump trip).
+water treatment plant with six process streams, an operator shift log, and
+a built-in scenario (drifting filter head loss, a past turbidity exceedance,
+a pump trip).
 
 No AVEVA account is required for demo mode. The data is deterministic so the
 LLM sees the same values every time, making demos and training reproducible.
@@ -61,7 +62,7 @@ from sds_types import (Namespace, Stream, StreamDetail, StreamValue, to_namespac
 
 load_dotenv()
 
-_VERSION = "0.4.0"
+_VERSION = "0.5.0"
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 
@@ -84,8 +85,8 @@ backend = mock_data.DemoSds() if DEMO_MODE else LiveSds(
     _CONFIG["CONNECT_CLIENT_SECRET"], _CONFIG["CONNECT_REGION"],
     community_id=os.getenv("CONNECT_COMMUNITY_ID", ""))
 
-# (namespace, stream) -> (value property, value SDS omits as default)
-_value_props: dict[tuple[str, str], tuple[str, object]] = {}
+# (namespace, stream) -> (value property, value SDS omits as default, value type)
+_value_props: dict[tuple[str, str], tuple[str, object, str]] = {}
 
 
 async def _call(coro, missing: str):
@@ -110,7 +111,7 @@ async def _resolved(namespace_id: str, stream_id: str) -> dict:
     return resolved
 
 
-async def _value_prop(namespace_id: str, stream_id: str) -> tuple[str, object]:
+async def _value_prop(namespace_id: str, stream_id: str) -> tuple[str, object, str]:
     key = (namespace_id, stream_id)
     if key not in _value_props:
         await _resolved(namespace_id, stream_id)
@@ -209,6 +210,9 @@ async def get_stream_metadata(namespace_id: str, stream_id: str) -> StreamDetail
       Id                  — stream identifier
       Name                — human-readable label
       TypeId              — SDS type (determines value field names and types)
+      ValueType           — number, boolean or text; text streams (alarm
+                            messages, work orders, shift notes) are read as
+                            stored events, see get_values
       Description         — engineering context
       Metadata            — key/value pairs set by whoever loaded the stream,
                             typically engineering units and limits (e.g.
@@ -238,9 +242,15 @@ async def get_values(
     """
     Query process values from a stream over a time range.
 
-    Returns at most `count` values in ascending time order, spread across the
-    whole window, so a long range gives a trend rather than its first few
-    points.
+    For number and boolean streams, returns at most `count` values in
+    ascending time order, spread across the whole window, so a long range
+    gives a trend rather than its first few points.
+
+    For text streams (ValueType text in get_stream_metadata), returns the
+    events stored in the window, oldest first, up to `count`; `method` is
+    ignored, since text can't be sampled or interpolated. If exactly `count`
+    come back there may be more: call again with `start` just after the last
+    Timestamp.
 
     Args:
       namespace_id  Namespace Id from list_namespaces
@@ -260,6 +270,7 @@ async def get_values(
     Returns a list of value objects.
     Numeric streams:  {"Timestamp": "2026-05-29T00:00:00Z", "Value": 2450.3}
     Boolean streams:  {"Timestamp": "2026-05-29T00:00:00Z", "Value": true}
+    Text streams:     {"Timestamp": "2026-05-29T03:12:00Z", "Value": "ALM PT-200 LO"}
     A value of 0 or false is reported as such. SDS omits default values on
     the wire; this tool fills them back in.
     """
@@ -267,9 +278,11 @@ async def get_values(
     if ctx:
         await ctx.report_progress(0, 1, message=f"Querying {stream_id}")
 
-    prop, default = await _value_prop(namespace_id, stream_id)
+    prop, default, value_type = await _value_prop(namespace_id, stream_id)
     missing = f"Stream '{stream_id}' not found in namespace '{namespace_id}'"
-    if method == "interpolated":
+    if value_type == "text":
+        raw = await _call(backend.stored(namespace_id, stream_id, start, end, count), missing)
+    elif method == "interpolated":
         raw = await _call(backend.interpolated(namespace_id, stream_id, start, end, count), missing)
     else:
         raw = await _call(backend.sampled(namespace_id, stream_id, start, end,
