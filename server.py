@@ -47,6 +47,7 @@ MCP:       spec 2026-07-28, mcp SDK 2.x
 """
 
 import os
+import sys
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -302,5 +303,6 @@ if __name__ == "__main__":
     mode = "DEMO — Aveva Water Authority mock data" if DEMO_MODE else f"LIVE — tenant {backend.tenant_id}"
     if not DEMO_MODE and backend.community_id:
         mode += f", community {backend.community_id}"
-    print(f"connect-data-services MCP server starting ({mode})")
+    # stderr: under stdio transport, stdout carries the protocol messages.
+    print(f"connect-data-services MCP server starting ({mode})", file=sys.stderr)
     mcp.run()
