@@ -198,6 +198,12 @@ To read streams another tenant shares with you through a community, also set:
 CONNECT_COMMUNITY_ID=community-id
 ```
 
+The startup line then names the community too:
+
+```
+connect-data-services MCP server starting (LIVE — tenant your-tenant-id, community community-id)
+```
+
 `list_namespaces` then returns the namespaces that hold shared streams, named
 after the tenant that shares them, and `list_streams` uses the community
 search, so it shows only shared streams. The other tools read from the
@@ -265,8 +271,8 @@ and Tags, with `*` as a wildcard (`FIT*`, `site1.P-101*`). It returns up to
 
 Returns the full record for one stream: its type, description, interpolation
 mode, tags, and metadata. In SDS, tags and metadata are separate resources
-from the stream itself, so this tool makes four calls (stream, type, tags,
-metadata) and merges them. Metadata is where engineering units and limits
+from the stream itself, so this tool makes three calls (the stream with its
+type resolved, its tags, its metadata) and merges them. Metadata is where engineering units and limits
 usually live (`EngineeringUnits`, `NormalLow`, `NormalHigh`). Call this before
 querying values so the AI has the context to interpret what it gets back.
 
